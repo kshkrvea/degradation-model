@@ -16,8 +16,8 @@ datasets:
     border_mode: false
     dataroot_GT: /home/ezgor/datasets/RealVSR/GT
     dataroot_LQ: /home/ezgor/datasets/RealVSR/LQ
-    cache_keys: ../keys/realvsr_keys.pkl
-    remove_list: ../keys/remove_seqs.pkl
+    cache_keys: ./keys/realvsr_keys.pkl
+    remove_list: ./keys/remove_seqs.pkl
     N_frames: 1 ###
     use_shuffle: true
     n_workers: 3  # per GPU
