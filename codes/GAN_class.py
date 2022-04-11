@@ -15,7 +15,9 @@ import torch.optim as optim
 from codes import my_utils 
 from tqdm import tqdm
 import numpy as np
-
+from skimage.metrics import peak_signal_noise_ratio as psnr
+from skimage.metrics import structural_similarity as ssim 
+import time
 
 class Generator(nn.Module):
     def __init__(self, channels):
@@ -212,10 +214,20 @@ class DownsampleGAN():
         self.discriminator.to(self.device)
 
 
+    def empty_val_losses(self):
+        self.validation_losses = {
+            'G': {'GAN': [], 'PSNR': [], 'SSIM': []}, 
+            'D': {'GAN': [], 'PSNR': [], 'SSIM': []}, 
+            'time': []} 
+
+
     def test(self, epoch):
         with torch.no_grad():
             error_G = 0
             error_D = 0
+            total_PSNR = 0
+            total_SSIM = 0
+            total_time = 0
             for data in self.validation_loader.dataset:
                 torch.cuda.empty_cache()
                 img_GT = np.array(data['GT'])
@@ -224,7 +236,7 @@ class DownsampleGAN():
                 HR = torch.tensor(my_utils.get_in(img_GT)).float()
                 HR = HR.resize(1, HR.size(0), HR.size(1), HR.size(2))
 
-                
+                #img_LQ = my_utils.get_in(img_LQ)
                 LR = torch.tensor(my_utils.get_in(img_LQ)).float()
                 LR = LR.resize(1, LR.size(0), LR.size(1), LR.size(2))
                 
@@ -236,7 +248,16 @@ class DownsampleGAN():
 
 
                 HR = my_utils.add_noise(HR, [HR.size(2), HR.size(3)])
+                t0 = time.time()
                 fake = self.generator(HR.to(self.device))
+                t1 = time.time()
+                total_time += (t1 - t0)
+                img_gen = my_utils.get_out(fake[0]).detach().cpu().numpy()
+                img_gt = img_LQ.detach().cpu().numpy()
+                total_PSNR += psnr(img_gen, img_gt)
+                total_SSIM += ssim(img_gen, img_gt, multichannel=True)
+
+
                 label.fill_(0)
                 fake_D = self.discriminator(fake.detach()).view(-1)
                 errD_fake = self.criterion(fake_D, label) 
@@ -251,11 +272,23 @@ class DownsampleGAN():
 
                 error_G += errG.item()
                 error_D += errD.item()
-                
-            error_G /= len(self.validation_loader)
-            error_D /= len(self.validation_loader)
-            self.validation_losses['G'].append(error_G) 
-            self.validation_losses['D'].append(error_D)
-            print('Test Generator loss after %d epoch = ' % int(epoch + 1), error_G)
-            print('Test Discriminator loss after %d epoch = ' % int(epoch + 1), error_D)   
+
+            vl_len =  len(self.validation_loader)   
+            av_error_G = error_G / vl_len
+            av_error_D = error_D / vl_len
+            av_time = total_time / vl_len
+            av_PSNR = total_PSNR / vl_len
+            av_SSIM = total_SSIM / vl_len
+
+            self.validation_losses['G']['GAN'].append(av_error_G) 
+            self.validation_losses['D']['GAN'].append(av_error_D)
+            self.validation_losses['time'].append(av_time)
+            self.validation_losses['D']['SSIM'].append(av_PSNR)
+            self.validation_losses['D']['PSNR'].append(av_SSIM)
+
+            print('Test Generator loss after %d epoch = ' % int(epoch + 1), av_error_G)
+            print('Test Discriminator loss after %d epoch = ' % int(epoch + 1), av_error_D)   
+            print('Test PSNR after %d epoch = ' % int(epoch + 1), av_PSNR)
+            print('Test SSIM after %d epoch = ' % int(epoch + 1), av_SSIM)   
+            print('Average time for one 1024x512 px frame processing: ', av_time)  
 
