@@ -77,6 +77,12 @@ class VideoTestDataset(data.Dataset):
             img_GT = self.imgs_GT[folder][idx]
         
         else:
+            # my crutch:
+            GT_size_tuple = (3, 1024, 512)
+            img_LQ = util.read_img(None, path_LQ)[..., ::-1]
+            img_LQ_l = cv2.resize(img_LQ, (GT_size_tuple[2] // 2, GT_size_tuple[1] // 2), interpolation=cv2.INTER_LINEAR)#[...,::-1]
+            img_GT = util.read_img(None, path_GT)[..., ::-1]
+            '''
             GT_size = self.opt['GT_size']
             GT_size_tuple = (3, 1024, 512)
             C, H, W = GT_size_tuple
@@ -85,6 +91,7 @@ class VideoTestDataset(data.Dataset):
             img_LQ = util.read_img(None, path_LQ)[rnd_h:rnd_h + GT_size, rnd_w:rnd_w + GT_size, ::-1]
             img_LQ_l = cv2.resize(img_LQ, (GT_size // 2, GT_size // 2), interpolation=cv2.INTER_LINEAR)#[...,::-1]
             img_GT = util.read_img(None, path_GT)[rnd_h:rnd_h + GT_size, rnd_w:rnd_w + GT_size, ::-1]
+            '''
             #imgs_LQ = path_LQ
             #img_GT = path_GT
 
