@@ -12,8 +12,10 @@ from torchvision.datasets import FashionMNIST
 from torchvision.utils import make_grid
 from torchvision.utils import save_image
 import torch.optim as optim
-from  codes import my_utils 
+from codes import my_utils 
 from tqdm import tqdm
+import numpy as np
+
 
 class Generator(nn.Module):
     def __init__(self, channels):
@@ -73,6 +75,7 @@ def weights_init(m):
         nn.init.normal_(m.weight.data, 1.0, 0.02)
         nn.init.constant_(m.bias.data, 0)
 
+
 class DownsampleGAN():
     
     def __init__(self, train_loader=None, validation_loader=None, device="cpu",
@@ -121,7 +124,8 @@ class DownsampleGAN():
         lr = self.lr
         self.optG = optim.Adam(self.generator.parameters(), lr=lr, betas=(0.5, 0.999))
         self.optD = optim.Adam(self.discriminator.parameters(), lr=lr, betas=(0.5, 0.999))
-    
+
+
     def training_step(self, train_data):
         LRs, HRs = train_data['LQs'], train_data['GT']
         batch_error_G = 0
@@ -190,9 +194,11 @@ class DownsampleGAN():
 
             self.on_epoch_end()
 
+
     def save_weights(self, pathG, pathD):
         torch.save(self.generator.state_dict(), pathG)
         torch.save(self.discriminator.state_dict(), pathD)  
+
 
     def load_weights(self, pathG, pathD):
         self.generator = Generator(self.num_channels)
@@ -204,3 +210,52 @@ class DownsampleGAN():
         self.discriminator.load_state_dict(torch.load(pathD))
         self.discriminator.eval()
         self.discriminator.to(self.device)
+
+
+    def test(self, epoch):
+        with torch.no_grad():
+            error_G = 0
+            error_D = 0
+            for data in self.validation_loader.dataset:
+                torch.cuda.empty_cache()
+                img_GT = np.array(data['GT'])
+                img_LQ = torch.tensor(np.array(data['LQ']))
+
+                HR = torch.tensor(my_utils.get_in(img_GT)).float()
+                HR = HR.resize(1, HR.size(0), HR.size(1), HR.size(2))
+
+                
+                LR = torch.tensor(my_utils.get_in(img_LQ)).float()
+                LR = LR.resize(1, LR.size(0), LR.size(1), LR.size(2))
+                
+                self.discriminator.zero_grad()
+                real_img = LR.to(self.device)
+                real_D = self.discriminator(real_img).view(-1)
+                label = torch.ones(real_D.size(), dtype=torch.float, device = self.device) 
+                errD_real = self.criterion(real_D, label)
+
+
+                HR = my_utils.add_noise(HR, [HR.size(2), HR.size(3)])
+                fake = self.generator(HR.to(self.device))
+                label.fill_(0)
+                fake_D = self.discriminator(fake.detach()).view(-1)
+                errD_fake = self.criterion(fake_D, label) 
+                errD = errD_real + errD_fake
+
+                self.generator.zero_grad()
+                label.fill_(1) 
+                fake_D = self.discriminator(fake).view(-1)
+
+                errG_mse = self.criterionG(fake, real_img)
+                errG = self.criterion(fake_D, label) + self.mse_weight * errG_mse 
+
+                error_G += errG.item()
+                error_D += errD.item()
+                
+            error_G /= len(self.validation_loader)
+            error_D /= len(self.validation_loader)
+            self.validation_losses['G'].append(error_G) 
+            self.validation_losses['D'].append(error_D)
+            print('Test Generator loss after %d epoch = ' % int(epoch + 1), error_G)
+            print('Test Discriminator loss after %d epoch = ' % int(epoch + 1), error_D)   
+
