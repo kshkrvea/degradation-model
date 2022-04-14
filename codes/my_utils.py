@@ -5,6 +5,10 @@ from multiprocessing import process
 import sys
 from math import pi
 from PIL import Image
+import cv2 as cv
+from codes import GAN_class
+from torch import nn
+
 
 def get_in(img):
     tmp = np.swapaxes(img, 2, 0)
@@ -38,3 +42,21 @@ def bicubic6x(img):
         
     return np.array(res.resize((res_w // 2, res_h // 2),Image.BICUBIC)) / 255
     
+
+def read_img(path):
+    img = cv.imread(path)
+    img = torch.tensor(get_in(img)).float()
+    img = img.reshape(1, img.size(0), img.size(1), img.size(2)) 
+    return add_noise(img, [img.size(2), img.size(3)]) 
+
+
+def create_generator(path, device, ngpu=1, num_channels=3):
+    # Create the Generator
+    generator = GAN_class.Generator(num_channels)
+    generator.load_state_dict(torch.load(path))
+    generator.eval()
+    generator.to(device)
+    if (device.type == 'cuda') and (ngpu > 1):
+        generator = nn.DataParallel(generator, list(range(ngpu)))
+    _ = generator.apply(GAN_class.weights_init)
+    return generator
