@@ -15,7 +15,6 @@ if __name__ == "__main__":
     print('device:', device)
     pathes = {'generator': sys.argv[1], 'load': sys.argv[2], 'save': sys.argv[3]}
     generator = my_utils.create_generator(pathes['generator'], device)
-    #'./weights/checkpoints/netG_9'
     if not os.path.exists(pathes['save']):
         os.mkdir(pathes['save'])
         
