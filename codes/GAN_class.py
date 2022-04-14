@@ -18,6 +18,9 @@ import numpy as np
 from skimage.metrics import peak_signal_noise_ratio as psnr
 from skimage.metrics import structural_similarity as ssim 
 import time
+import lpips
+from PIL import Image, ImageFilter
+from math import pi
 
 class Generator(nn.Module):
     def __init__(self, channels):
@@ -216,29 +219,38 @@ class DownsampleGAN():
 
     def empty_val_losses(self):
         self.validation_losses = {
-            'G': {'GAN': [], 'PSNR': [], 'SSIM': []}, 
-            'D': {'GAN': [], 'PSNR': [], 'SSIM': []}, 
+            'G': {'GAN': [], 'PSNR': [], 'SSIM': [], 'LPIPS': []}, 
+            'D': [],
+            'BC': {'PSNR': -1, 'SSIM': -1, 'LPIPS': -1},
+            'GS': {'PSNR': -1, 'SSIM': -1, 'LPIPS': -1},
+            'BC6': {'PSNR': -1, 'SSIM': -1, 'LPIPS': -1},
             'time': []} 
 
 
-    def test(self, epoch):
+    def test(self, epoch, flags={}):
         with torch.no_grad():
             error_G = 0
             error_D = 0
-            total_PSNR = 0
-            total_SSIM = 0
+            
             total_time = 0
-            for data in self.validation_loader.dataset:
+
+            total_values = {
+                'PSNR': {'G': 0, 'BC': 0, 'BC6': 0, 'GS': 0},
+                'SSIM': {'G': 0, 'BC': 0, 'BC6': 0, 'GS': 0},
+                'LPIPS': {'G': 0, 'BC': 0, 'BC6': 0, 'GS': 0}
+                }
+
+            loss_lpips = lpips.LPIPS(net='alex')
+            for data in tqdm(self.validation_loader.dataset):
                 torch.cuda.empty_cache()
                 img_GT = np.array(data['GT'])
                 img_LQ = torch.tensor(np.array(data['LQ']))
 
                 HR = torch.tensor(my_utils.get_in(img_GT)).float()
-                HR = HR.resize(1, HR.size(0), HR.size(1), HR.size(2))
+                HR = HR.reshape(1, HR.size(0), HR.size(1), HR.size(2))
 
-                #img_LQ = my_utils.get_in(img_LQ)
-                LR = torch.tensor(my_utils.get_in(img_LQ)).float()
-                LR = LR.resize(1, LR.size(0), LR.size(1), LR.size(2))
+                LR = (my_utils.get_in(img_LQ).float()).clone().detach()
+                LR = LR.reshape(1, LR.size(0), LR.size(1), LR.size(2))
                 
                 self.discriminator.zero_grad()
                 real_img = LR.to(self.device)
@@ -252,10 +264,60 @@ class DownsampleGAN():
                 fake = self.generator(HR.to(self.device))
                 t1 = time.time()
                 total_time += (t1 - t0)
+
+                
                 img_gen = my_utils.get_out(fake[0]).detach().cpu().numpy()
                 img_gt = img_LQ.detach().cpu().numpy()
-                total_PSNR += psnr(img_gen, img_gt)
-                total_SSIM += ssim(img_gen, img_gt, multichannel=True)
+
+                if len(flags) > 0:
+                    GT = Image.fromarray((img_GT * 255).astype('uint8'), 'RGB')
+                    GT_GS = GT.filter(ImageFilter.GaussianBlur(radius = 2/pi))
+                    width, height = GT.size
+                    img_BC = np.array(GT.resize((width // 2, height // 2),Image.BICUBIC)) / 255
+                    img_GS = np.array(GT_GS.resize((width // 2, height // 2),Image.BICUBIC)) / 255
+                    img_BC6 = my_utils.bicubic6x(GT)
+
+
+                    if 'PSNR' in flags:
+                        total_values['PSNR']['G'] += psnr(img_gen, img_gt)
+                        
+                        if self.validation_losses['BC']['PSNR'] == -1:
+                            total_values['PSNR']['BC'] += psnr(img_BC, img_gt)
+                        
+                        if self.validation_losses['GS']['PSNR'] == -1:    
+                            total_values['PSNR']['GS'] += psnr(img_GS, img_gt)
+
+                        if self.validation_losses['BC6']['PSNR'] == -1:    
+                            total_values['PSNR']['BC6'] += psnr(img_BC6, img_gt)
+
+                    if 'SSIM' in flags:
+                        total_values['SSIM']['G'] += ssim(img_gen, img_gt, multichannel=True)
+                        if self.validation_losses['BC']['SSIM'] == -1:
+                            total_values['SSIM']['BC'] += ssim(img_BC, img_gt, multichannel=True)
+
+                        if self.validation_losses['GS']['SSIM'] == -1:
+                            total_values['SSIM']['GS'] += ssim(img_GS, img_gt, multichannel=True)
+
+                        if self.validation_losses['BC6']['SSIM'] == -1:    
+                            total_values['SSIM']['BC6'] += ssim(img_BC6, img_gt, multichannel=True)    
+                    
+                    if 'LPIPS' in flags:
+                        total_values['LPIPS']['G'] += loss_lpips(LR, fake.detach().cpu())
+                        
+                        if self.validation_losses['BC']['LPIPS'] == -1: 
+                            LR_BC = torch.tensor(my_utils.get_in(img_BC)).float()
+                            LR_BC = LR_BC.reshape(1, LR_BC.size(0), LR_BC.size(1), LR_BC.size(2))
+                            total_values['LPIPS']['BC'] += loss_lpips(LR_BC, fake.detach().cpu())
+
+                        if self.validation_losses['BC6']['LPIPS'] == -1: 
+                            LR_BC6 = torch.tensor(my_utils.get_in(img_BC6)).float()
+                            LR_BC6 = LR_BC6.reshape(1, LR_BC6.size(0), LR_BC6.size(1), LR_BC6.size(2))
+                            total_values['LPIPS']['BC6'] += loss_lpips(LR_BC6, fake.detach().cpu())    
+                        
+                        if self.validation_losses['GS']['LPIPS'] == -1: 
+                            LR_GS = torch.tensor(my_utils.get_in(img_GS)).float()
+                            LR_GS = LR_GS.reshape(1, LR_GS.size(0), LR_GS.size(1), LR_GS.size(2))
+                            total_values['LPIPS']['GS'] += loss_lpips(LR_GS, fake.detach().cpu())
 
 
                 label.fill_(0)
@@ -273,22 +335,31 @@ class DownsampleGAN():
                 error_G += errG.item()
                 error_D += errD.item()
 
-            vl_len =  len(self.validation_loader)   
+            vl_len =  len(self.validation_loader)  
+            
+            av_values = {x: {y: total_values[x][y] / vl_len for y in total_values[x]} for x in total_values}
             av_error_G = error_G / vl_len
             av_error_D = error_D / vl_len
             av_time = total_time / vl_len
-            av_PSNR = total_PSNR / vl_len
-            av_SSIM = total_SSIM / vl_len
 
+            
             self.validation_losses['G']['GAN'].append(av_error_G) 
-            self.validation_losses['D']['GAN'].append(av_error_D)
+            self.validation_losses['D'].append(av_error_D)
             self.validation_losses['time'].append(av_time)
-            self.validation_losses['D']['SSIM'].append(av_PSNR)
-            self.validation_losses['D']['PSNR'].append(av_SSIM)
+
+            self.validation_losses['G']['SSIM'].append(av_values['SSIM']['G'])
+            self.validation_losses['G']['PSNR'].append(av_values['PSNR']['G'])
+            self.validation_losses['G']['LPIPS'].append(av_values['LPIPS']['G'])
+
+            for x in av_values:
+                for y in av_values[x]:
+                    if y != 'G' and av_values[x][y] != 0:
+                        self.validation_losses[y][x] =  av_values[x][y]
+ 
 
             print('Test Generator loss after %d epoch = ' % int(epoch + 1), av_error_G)
             print('Test Discriminator loss after %d epoch = ' % int(epoch + 1), av_error_D)   
-            print('Test PSNR after %d epoch = ' % int(epoch + 1), av_PSNR)
-            print('Test SSIM after %d epoch = ' % int(epoch + 1), av_SSIM)   
+            print('Test PSNR after %d epoch = ' % int(epoch + 1), av_values['PSNR']['G'])
+            print('Test SSIM after %d epoch = ' % int(epoch + 1), av_values['SSIM']['G'])
+            print('Test LPIPS after %d epoch = ' % int(epoch + 1), av_values['LPIPS']['G'].item())   
             print('Average time for one 1024x512 px frame processing: ', av_time)  
-
