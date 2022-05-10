@@ -15,7 +15,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('-m', '--model', type=str, default='saved_weights/models/mod_19', help='Folder path to the pre-trained models')
     parser.add_argument('-i', '--input', type=str, default='inputs', help='Input folder')
-    parser.add_argument('-o', '--outs', type=str, default='results', help='Output folder')
+    parser.add_argument('-o', '--output', type=str, default='results', help='Output folder')
     parser.add_argument('-b', '--block_size', type=int, default=128, help='Size of block to split the image')
     
     args = parser.parse_args()
