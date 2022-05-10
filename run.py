@@ -17,7 +17,6 @@ if __name__ == "__main__":
     print('device:', device)
     pathes = {'model': sys.argv[1], 'load': sys.argv[2], 'save': sys.argv[3]}
     block_size = 256 if not sys.argv[4] else int(sys.argv[4])
-    #generator = my_utils.create_generator(pathes['generator'], device)
     dwsGAN = my_utils.load_model(pathes['model'])
 
     if not os.path.exists(pathes['save']):
