@@ -1,14 +1,11 @@
 import numpy as np
 import torch
 import pickle
-from multiprocessing import process
-import sys
-from math import pi
 from PIL import Image
 import cv2 as cv
 from codes import GAN_class
 from torch import nn
-
+from codes.GAN_class import DownsampleGAN
 
 def get_in(img):
     tmp = np.swapaxes(img, 2, 0)
@@ -52,11 +49,47 @@ def read_img(path):
 
 def create_generator(path, device, ngpu=1, num_channels=3):
     # Create the Generator
-    generator = GAN_class.Generator(num_channels)
+    generator = GAN_class.Generator()
     generator.load_state_dict(torch.load(path))
     generator.eval()
     generator.to(device)
     if (device.type == 'cuda') and (ngpu > 1):
         generator = nn.DataParallel(generator, list(range(ngpu)))
-    _ = generator.apply(GAN_class.weights_init)
+    generator.apply(GAN_class.weights_init)
     return generator
+
+
+
+def hr2lr(netG, device, inp):
+    inp = torch.tensor(get_in(inp)).float()
+    inp = inp.resize(1, inp.size(0), inp.size(1), inp.size(2))
+    inp = add_noise(inp, [inp.size(2), inp.size(3)])
+    res = netG(inp.to(device))
+    res = get_out(res.detach().cpu().numpy()[0])
+    return res
+
+def concat_vh(list_2d):
+    return cv.hconcat([cv.vconcat(list_h) for list_h in list_2d])
+
+def frame_processing(netG, device, path, block_size=512):
+    ''' 
+    > the frame size often exceeds the amount of memory in the GPU, so we have to divide the image into clippings (size of each cropped block <= block_size) 
+    and process each cropping individually
+    > this function contains all stages of degraiding (applying [netG] generator) image stored at [path]
+    > returnes degraded full frame
+    '''
+    board_HR = cv.imread(path)[... , ::-1] / 255
+    LR_dim = np.array([board_HR.shape[1], board_HR.shape[0]])
+    target_dim = (LR_dim) // block_size + ((LR_dim % block_size) + block_size - 1) // block_size 
+    
+    crops = np.array([[board_HR[block_size * j : block_size * (j + 1), block_size * i : block_size * (i + 1)]
+                   for i in range(target_dim[0])] 
+                   for j in range(target_dim[1])], dtype=object)
+    with torch.no_grad():
+        torch.cuda.empty_cache()
+        degraded_blocks = np.array([[ hr2lr(netG, device, crops[i, j]) 
+                                     for i in range(target_dim[1])] 
+                                    for j in range(target_dim[0])], dtype=object)
+        
+    return(concat_vh(degraded_blocks))
+    

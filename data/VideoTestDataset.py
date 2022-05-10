@@ -23,6 +23,7 @@ class VideoTestDataset(data.Dataset):
         self.GT_root, self.LQ_root = opt['dataroot_GT'], opt['dataroot_LQ']
         self.data_type = opt['data_type']
         self.data_info = {'path_LQ': [], 'path_GT': [], 'folder': [], 'idx': [], 'border': []}
+        #self.LQ_size = opt['LQ_size']
         if self.data_type == 'lmdb':
             raise ValueError('No need to use LMDB during validation/test.')
         #### Generate data info and cache data
@@ -80,7 +81,7 @@ class VideoTestDataset(data.Dataset):
             # my crutch:
             GT_size_tuple = (3, 1024, 512)
             img_LQ = util.read_img(None, path_LQ)[..., ::-1]
-            img_LQ_l = cv2.resize(img_LQ, (GT_size_tuple[2] // 2, GT_size_tuple[1] // 2), interpolation=cv2.INTER_LINEAR)#[...,::-1]
+            img_LQ_l = cv2.resize(img_LQ, (GT_size_tuple[2] // 2, GT_size_tuple[1] // 2), interpolation=cv2.INTER_LINEAR)#[:192, :192,::-1]
             img_GT = util.read_img(None, path_GT)[..., ::-1]
             '''
             GT_size = self.opt['GT_size']

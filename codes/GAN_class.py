@@ -1,16 +1,5 @@
 import torch
 import torch.nn as nn
-from torch import autograd
-from torch.nn import functional as F
-from torch.utils.data import DataLoader, TensorDataset
-from torch.utils.data.dataset import Dataset, random_split
-from torch.autograd import Variable
-import torchvision
-import torchvision.transforms as transforms
-from torchvision import datasets
-from torchvision.datasets import FashionMNIST
-from torchvision.utils import make_grid
-from torchvision.utils import save_image
 import torch.optim as optim
 from codes import my_utils 
 from tqdm import tqdm
@@ -21,53 +10,108 @@ import time
 import lpips
 from PIL import Image, ImageFilter
 from math import pi
+import functools
+import torch.nn.functional as F 
+
+def make_layer(block, n_layers):
+    layers = []
+    for _ in range(n_layers):
+        layers.append(block())
+    return nn.Sequential(*layers)
+
+class ResidualDenseBlock_5C(nn.Module):
+    def __init__(self, nf=32, gc=16, bias=True):
+        super(ResidualDenseBlock_5C, self).__init__()
+        # gc: growth channel, i.e. intermediate channels
+        self.conv1 = nn.Conv2d(nf, gc, 3, 1, 1)
+        self.conv2 = nn.Conv2d(nf + gc, gc, 3, 1, 1)
+        self.conv3 = nn.Conv2d(nf + 2 * gc, gc, 3, 1, 1)
+        self.conv4 = nn.Conv2d(nf + 3 * gc, gc, 3, 1, 1)
+        self.conv5 = nn.Conv2d(nf + 4 * gc, nf, 3, 1, 1)
+        self.lrelu = nn.LeakyReLU(negative_slope=0.2, inplace=True)
+
+        # initialization
+        # mutil.initialize_weights([self.conv1, self.conv2, self.conv3, self.conv4, self.conv5], 0.1)
+
+    def forward(self, x):
+        x1 = self.lrelu(self.conv1(x))
+        x2 = self.lrelu(self.conv2(torch.cat((x, x1), 1)))
+        x3 = self.lrelu(self.conv3(torch.cat((x, x1, x2), 1)))
+        x4 = self.lrelu(self.conv4(torch.cat((x, x1, x2, x3), 1)))
+        x5 = self.conv5(torch.cat((x, x1, x2, x3, x4), 1))
+        return x5 * 0.2 + x
+
+class RRDB(nn.Module):
+    '''Residual in Residual Dense Block'''
+
+    def __init__(self, nf, gc=16):
+        super(RRDB, self).__init__()
+        self.RDB1 = ResidualDenseBlock_5C(nf, gc)
+        self.RDB2 = ResidualDenseBlock_5C(nf, gc)
+        self.RDB3 = ResidualDenseBlock_5C(nf, gc)
+
+    def forward(self, x):
+        out = self.RDB1(x)
+        out = self.RDB2(out)
+        out = self.RDB3(out)
+        return out * 0.2 + x
 
 class Generator(nn.Module):
-    def __init__(self, channels):
+    def __init__(self, in_nc=4, out_nc=3, nf=32, nb=11 , gc=16):
         super(Generator, self).__init__()
-        self.convolutional = nn.Sequential(
-            nn.Conv2d(in_channels=channels+1, out_channels=channels * 8, kernel_size=3, stride=1,  padding='same', padding_mode='reflect'),
-            nn.LeakyReLU(),
-            nn.Conv2d(in_channels=channels * 8, out_channels=channels * 64, kernel_size=3, stride=1,  padding='same', padding_mode='reflect'),
-            nn.LeakyReLU(),
-            nn.Conv2d(in_channels=channels * 64, out_channels=channels * 64, kernel_size=3, stride=2, padding=1, padding_mode='reflect'),
-            nn.LeakyReLU(),
-            nn.Conv2d(in_channels=channels * 64, out_channels=channels * 8, kernel_size=3, stride=1,  padding='same', padding_mode='reflect'),
-            nn.Sigmoid(),
-            nn.Conv2d(in_channels=channels * 8, out_channels=channels, kernel_size=3, stride=1,  padding='same', padding_mode='reflect'),
-            nn.Sigmoid()
-        )
 
-    def forward(self, input):
-        return self.convolutional(input)
+        self.sigmoid = nn.Sigmoid()
+        RRDB_block_f = functools.partial(RRDB, nf=nf, gc=gc)
 
+        self.conv_first = nn.Conv2d(in_nc, nf, 3, 2, 1, bias=True)#, padding_mode='reflect')
+        self.RRDB_trunk = make_layer(RRDB_block_f, nb)
+        self.trunk_conv = nn.Conv2d(nf, nf, 3, 1, 1, bias=True)
+        
+        self.downconv1 = nn.Conv2d(nf, nf, 3, 1, 1, bias=True)
+        self.LRconv = nn.Conv2d(nf, nf, 3, 1, 1, bias=True)
+        self.conv_last = nn.Conv2d(nf, out_nc, 3, 1, 1, bias=True)
+
+        self.lrelu = nn.LeakyReLU(negative_slope=0.2, inplace=True)
+
+    def forward(self, x):
+        fea = self.conv_first(x)
+        trunk = self.trunk_conv(self.RRDB_trunk(fea))
+        fea = self.lrelu(fea + trunk)
+
+        out = self.conv_last(self.lrelu(self.LRconv(fea)))
+
+        return self.sigmoid(out)
 
 class Discriminator(nn.Module):
-    def __init__(self, ndf=64, nc=3):
+    def __init__(self, ndf=16, nc=3, bn=False):
         super(Discriminator, self).__init__()
+
+        def discriminator_block(in_filters, out_filters, bn=False):
+            block = [nn.Conv2d(in_channels=in_filters, out_channels=out_filters, kernel_size=3, stride=2, padding=2, bias=False), 
+                nn.LeakyReLU(0.2, inplace=True), 
+                nn.Dropout2d(0.25)]
+            if bn:
+                block.append(nn.BatchNorm2d(out_filters, 0.8))
+            return block
+
         self.convolutional = nn.Sequential(
-            nn.Conv2d(in_channels=nc, out_channels=ndf, kernel_size=5, stride=2, padding=2, bias=False),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(in_channels=ndf, out_channels=ndf * 2, kernel_size=5, stride=2, padding=2, bias=False),
-            nn.BatchNorm2d(ndf * 2),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(in_channels=ndf * 2, out_channels=1, kernel_size=5, stride=2, padding=0, bias=False),
-            nn.AdaptiveAvgPool2d(1)
+            *discriminator_block(nc, 16),
+            *discriminator_block(16, 32),
+            *discriminator_block(32, 64),
+            *discriminator_block(64, 128)
         )
 
+
         self.fullyconnected = nn.Sequential(
-                nn.Linear(1, 16),
+                nn.Linear(8192, 128),
                 nn.LeakyReLU(),
-                nn.Linear(16, 256),
-                nn.LeakyReLU(),
-                nn.Linear(256, 16),
-                nn.LeakyReLU(),
-                nn.Linear(16, 1),
+                nn.Linear(128, 1),
                 nn.Sigmoid()
             )
 
     def forward(self, input):
         tmp = self.convolutional(input)
+        tmp = tmp.view(tmp.shape[0], -1)
         tmp = self.fullyconnected(tmp)
         return tmp        
 
@@ -86,12 +130,12 @@ class DownsampleGAN():
     def __init__(self, train_loader=None, validation_loader=None, device="cpu",
                  weights_path='./weights/default', models_path='./saved_models/default',
                  img_size=(192, 192), num_channels=3, batch_size=32,
-                 channels=3, lr=0.0003, mse_weight=500, epochs=1, ngpu=1):
+                 channels=3, lr=0.00003, mse_weight=500, epochs=1, ngpu=1):
         
         torch.cuda.empty_cache()
         self.device = device
         # Create the Generator
-        self.generator = Generator(num_channels).to(device)
+        self.generator = Generator().to(device)
         if (device.type == 'cuda') and (ngpu > 1):
             self.generator = nn.DataParallel(self.generator, list(range(ngpu)))
         _ = self.generator.apply(weights_init)
@@ -127,8 +171,8 @@ class DownsampleGAN():
     
     def configure_optimizers(self):
         lr = self.lr
-        self.optG = optim.Adam(self.generator.parameters(), lr=lr, betas=(0.5, 0.999))
-        self.optD = optim.Adam(self.discriminator.parameters(), lr=lr, betas=(0.5, 0.999))
+        self.optG = optim.Adam(self.generator.parameters(), lr=lr, betas=(0.6, 0.999))
+        self.optD = optim.Adam(self.discriminator.parameters(), lr=lr, betas=(0.6, 0.999))
 
 
     def training_step(self, train_data):
@@ -188,7 +232,7 @@ class DownsampleGAN():
 
         for epoch in range(self.epochs):
             self.configure_optimizers()
-            for i, train_data in tqdm(enumerate(self.train_loader)):
+            for i, train_data in enumerate(tqdm(self.train_loader)):
                 batch_error_G, batch_error_D = self.training_step(train_data)
                 if i % 100 == 0:
                     print('[%d/%d][%d/%d]\tLoss_D: %.4f\tLoss_G: %.4f'
@@ -206,12 +250,12 @@ class DownsampleGAN():
 
 
     def load_weights(self, pathG, pathD):
-        self.generator = Generator(self.num_channels)
+        self.generator = Generator()
         self.generator.load_state_dict(torch.load(pathG))
         self.generator.eval()
         self.generator.to(self.device)
 
-        self.discriminator = Discriminator(self.num_channels)
+        self.discriminator = Discriminator()
         self.discriminator.load_state_dict(torch.load(pathD))
         self.discriminator.eval()
         self.discriminator.to(self.device)
@@ -227,7 +271,7 @@ class DownsampleGAN():
             'time': []} 
 
 
-    def test(self, epoch, flags={}):
+    def test(self, epoch, flags={}):                    
         with torch.no_grad():
             error_G = 0
             error_D = 0
@@ -243,8 +287,8 @@ class DownsampleGAN():
             loss_lpips = lpips.LPIPS(net='alex')
             for data in tqdm(self.validation_loader.dataset):
                 torch.cuda.empty_cache()
-                img_GT = np.array(data['GT'])
-                img_LQ = torch.tensor(np.array(data['LQ']))
+                img_GT = np.array(data['GT'][:192, :192, ...])
+                img_LQ = torch.tensor(np.array(data['LQ'][:96, :96, ...]))
 
                 HR = torch.tensor(my_utils.get_in(img_GT)).float()
                 HR = HR.reshape(1, HR.size(0), HR.size(1), HR.size(2))
@@ -252,7 +296,7 @@ class DownsampleGAN():
                 LR = (my_utils.get_in(img_LQ).float()).clone().detach()
                 LR = LR.reshape(1, LR.size(0), LR.size(1), LR.size(2))
                 
-                self.discriminator.zero_grad()
+                #self.discriminator.zero_grad()
                 real_img = LR.to(self.device)
                 real_D = self.discriminator(real_img).view(-1)
                 label = torch.ones(real_D.size(), dtype=torch.float, device = self.device) 

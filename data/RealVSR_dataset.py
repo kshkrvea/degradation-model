@@ -187,7 +187,6 @@ class RealVSRAllPairDataset(data.Dataset):
     """
 
     def __init__(self, opt):
-        print("horosh")
         super(RealVSRAllPairDataset, self).__init__()
         self.opt = opt
         # temporal augmentation
