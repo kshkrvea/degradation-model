@@ -19,18 +19,16 @@ if __name__ == "__main__":
     parser.add_argument('-b', '--block_size', type=int, default=128, help='Size of block to split the image')
     
     args = parser.parse_args()
-    
-    #pathes = {'model': sys.argv[1], 'load': sys.argv[2], 'save': sys.argv[3]}
 
     dwsGAN = my_utils.load_model(args.model)
 
-    if not os.path.exists(args.outs):
-        os.mkdir(args.outs)
+    if not os.path.exists(args.output):
+        os.mkdir(args.output)
         
     file_names = os.listdir(args.input)    
 
     file_pathes = [map(lambda name: os.path.join(args.input, name), file_names), 
-        map(lambda name: os.path.join(args.outs, name), file_names)]
+        map(lambda name: os.path.join(args.output, name), file_names)]
 
     files = [[], []]
     for file_load, file_save in zip(file_pathes[0], file_pathes[1]):
